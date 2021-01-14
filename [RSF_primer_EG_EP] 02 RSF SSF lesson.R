@@ -64,10 +64,21 @@ caribou.df$x <- caribou.df$coords.x1
 caribou.df$y <- caribou.df$coords.x2
 caribou.df$time <- caribou.df$dttm
 
+caribou.df <- caribou.df %>%
+  dplyr::group_by(ANIMAL_ID) %>%
+  dplyr::filter(dplyr::n() >= 15) %>%
+  as.data.frame()
+
+
 ##########################
 #### Lesson
 ##########################
 
+
+
+##########################
+#### RSF
+##########################
 
 # Loading habitat RasterStack and plotting it, just to remind us of the beauty
 plot(fmch.habitat)
@@ -113,10 +124,12 @@ summary(RSF.fit)$coef
 plot_model(RSF.fit)
 
 # Looking at correlation between elevation and distance to roads
+dev.off()
 with(Data.rsf, plot(elevation, dist.roads, col = factor(Used)))
 
 # A model with interaction between elevation and distance to roads
 RSF.fit2 <- glm(Used ~ scale(elevation) * scale(dist.roads) + scale(time.since.fire), data = Data.rsf, family = "binomial")
+summary(RSF.fit2)$coef
 plot_model(RSF.fit2)
 
 # Comparing AIC values between two models
@@ -133,6 +146,12 @@ AIC(RSF.fit, RSF.fit2, RSF.fit3)
 # Removing the non significant interaction between elevation2 and distance to roads
 RSF.fit4 <- update(RSF.fit3, formula = ~ . - scale(e2):scale(dist.roads))
 AIC(RSF.fit, RSF.fit2, RSF.fit3, RSF.fit4)
+
+
+RSF.fit5 <- glm(Used ~ scale(elevation) + scale(dist.roads), data = Data.rsf, family = "binomial")
+summary(RSF.fit5)$coef
+AIC(RSF.fit, RSF.fit2, RSF.fit3, RSF.fit4, RSF.fit5)
+plot_model(RSF.fit5)
 
 
 # RSF prediction map
@@ -162,11 +181,45 @@ plot(fmch.rsf, main = "RSF", col = grey.colors(100, start = 0, end = 1))
 points(caribou.sp, col = alpha("darkblue", 0.3), cex = 0.5)
 
 
+# RSF prediction map (Elk version)
+
+# Make sure we have prediction scopes that match, and creating a new raster called 'fmch.rsf'
+# with the same extent and resolution; we will fill this raster with predicted values
+
+fmch.habitat.cropped <- crop(fmch.habitat, extent(caribou.sp))
+fmch.rsf <- fmch.habitat.cropped[[1]]
+
+# Extract the approporiate vectors for all habitat layers:
+fmch.elevation.vector <- fmch.habitat.cropped[[1]]@data@values
+# fmch.fire.vector <- fmch.habitat.cropped[[2]]@data@values
+fmch.dist.roads.vector <- fmch.habitat.cropped[[3]]@data@values
+# fmch.elevation2.vector <- (fmch.habitat.cropped[[1]]@data@values)^2
+Predict.df <- data.frame(elevation = fmch.elevation.vector,
+                         dist.roads=fmch.dist.roads.vector)
+
+# use the predict function to fill in the newly created habitat raster with predicted values
+fmch.rsf@data@values <- predict(RSF.fit5, newdata = Predict.df)
+
+# Plot the RSF with caribou points on top!
+dev.off()
+plot(fmch.rsf, main = "RSF", col = grey.colors(100, start = 0, end = 1))
+points(caribou.sp, col = alpha("darkblue", 0.3), cex = 0.5)
+
+
+
+##########################
+#### SSF
+##########################
+
+
+
+
 
 # SSFs
 # Loading more packages
 require(amt)
 require(sp)
+library(survival)
 
 # Picking one animal to run a quick SSF
 fa1403<- caribou.df %>%
@@ -190,27 +243,8 @@ true.random.steps1 <- random_steps(true.steps1, n = 15)
 # extracting covariates at the endpoints of each step (both used and available)
 ssf1 <- true.random.steps1 %>% extract_covariates(fmch.habitat) 
 
-
-
-
-
-
-
-##########################
-#### CODE BREAKS HERE
-##########################
-
-
-
-
-
-
-
-
-
 # running a quick model with each of the covariates, including the step length
-ssf.1 <- clogit(case_ ~ strata(step_id_) + scale(elevation) + scale(time.since.fire) + scale(dist.roads) +
-                  scale(sl_), method = 'approximate', data = ssf1)
+ssf.1 <- clogit(case_ ~ strata(step_id_) + scale(elev) + scale(tsfire) + scale(distroads) + scale(sl_), method = 'approximate', data = ssf1)
 
 plot_model(ssf.1, title="SSF Coefficients")
 
@@ -218,8 +252,8 @@ plot_model(ssf.1, title="SSF Coefficients")
 # Now doing the same process but with multiple animals rather than just one
 nested <- 
   caribou.df %>% 
-  nest(-id) %>% 
-  mutate(track = map(data, ~ mk_track(., x, y, time, crs= CRS("+proj=utm +zone=6 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"))))
+  nest(-ANIMAL_ID) %>% 
+  mutate(track = map(data, ~ mk_track(., x, y, time, crs= CRS("+proj=aea +lat_1=50 +lat_2=58.5 +lat_0=45 +lon_0=-126 +x_0=1000000 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"))))
 
 names(nested)
 
@@ -237,7 +271,7 @@ head(true.steps[[1]])
 true.random.steps <- map(true.steps, random_steps, n=10)
 
 # combining all lists together to get normal data frame with all individuals 
-all.steps <- bind_rows(true.random.steps, .id="id")
+all.steps <- dplyr::bind_rows(true.random.steps, .id="id")
 all.steps
 
 # plotting a histogram of turning angles
@@ -246,7 +280,7 @@ with(all.steps, hist(ta_[case_==T], breaks=20, main = "Histogram of turning angl
 # converting steps to SpatialPointsDataFrame and projecting it
 steps.sp <- all.steps
 coordinates(steps.sp) <- ~x2_+y2_
-proj4string(steps.sp) <- CRS("+proj=utm +zone=6 +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
+proj4string(steps.sp) <- CRS("+proj=aea +lat_1=50 +lat_2=58.5 +lat_0=45 +lon_0=-126 +x_0=1000000 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
 
 # Extracting habitat covariates and annotating GPS locations with habitat data
 covariates <- raster::extract(fmch.habitat, steps.sp)
